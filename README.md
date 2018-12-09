@@ -59,4 +59,12 @@ while True:
 # Payload is passed as argument to the callback function.
 s.set_callback(id=30, callback=myFun)
 
+
+# Convert payload from bytes to desired type
+    id, payload = s.read()
+    val = bytes2int(payload)  # convert to integer
+    val = bytes2float(payload)  # convert to float
+    val = bytes2str(payload)  # convert to string
+    # Note: there is no way to know of what type the data inside a packet is.
+    # You should use id to differentiate between packets.
 ```
