@@ -39,6 +39,8 @@ Data is sent in packets. Each packet has an ***id*** in range *0 - 255*. The ***
 can be used for identifying the topic of the packet. 
 
 ```python
+from simple_serial import SimpleSerial, bytes2int, bytes2float, bytes2str
+
 # Open communication
 s = SimpleSerial(port="/dev/cu.SLAB_USBtoUART", baud=115200)
 s.open()
