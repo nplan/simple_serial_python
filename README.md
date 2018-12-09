@@ -8,7 +8,7 @@ Currently supported platforms:
 * Arduino / C++
 * Python
 
-This is a repository for the python version. Find Arduino version at: 
+This is a repository for the python version. Find Arduino / C++ version at: 
 https://github.com/nplan/simple_serial_arduino
 
 The library supports simple and efficient transfer of data types:
