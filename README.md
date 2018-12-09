@@ -52,7 +52,7 @@ s.send(3, "this is a string")  # Send packet containing a string
 
 # Receive data in a loop
 while True:
-    id, payload = s.read()
+    id, payload = s.read()  # Returns a packet from received buffer
     if id == 123:
         # do something
 
