@@ -82,7 +82,7 @@ class SimpleSerial:
     """
 
     def __init__(self, port, baud, *args, start=0x02, end=0x03, esc=0x01, payload_max_len=8,
-                 packet_timeout=1.0, queue_max_len=1000, **kwargs):
+                 packet_timeout=1.0, queue_max_len=100, **kwargs):
         """
         :param port: serial port
         :param baud: baud rate

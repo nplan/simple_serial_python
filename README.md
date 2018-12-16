@@ -70,3 +70,32 @@ s.set_callback(id=30, callback=myFun)
     # Note: there is no way to know of what type the data inside a packet is.
     # You should use id to differentiate between packets.
 ```
+
+The default payload length in bytes is set to 8. This can be changed by passing argument ```payload_max_len``` to
+```SimpleSerial()``` constructor.
+
+## How it works?
+Before being sent over serial port, data is framed into packets using using special **flag bytes**:
+* *START* Byte - Signalling **start** of packet, *default = ASCII 2 STX*
+* *END* Byte - Signalling **end** of packet, *default = ASCII 3 ETX*
+* *ESC* Byte - Inserted prior to payload data byte if it happens to have the same byte value 
+as one of the flag bytes. *default = ASCII 1 SOH*
+
+A complete packet frame:
+
+BYTE 0| BYTE 1 | BYTE 2 | BYTES 3 ... *N*-1 | BYTE *N*
+------|--------|--------|------------- -----|---------
+START|LEN|ID|Payload Data Bytes|END
+
+Byte 1 *LEN* indicates the total length of packet in bytes.
+
+When ```SimpleSerial.send()``` functions is called, the payload is framed into a packet
+and placed into **send queue**. Packets from this queue are sent over serial port 
+using a separate thread.
+
+Serial port is being monitored for incoming packets inside a separate thread.
+The thread reads incoming packet frames byte by byte. When a complete packet frame is received, it is placed
+into **read queue**. Packets are retrieved from this queue using function ```SimpleSerial.read()```.
+
+The length of send and read queues is set by argument ```queue_max_len``` of ```SimpleSerial()``` constructor.
+If a queue is full, packets are discarded (not sent or not received).
