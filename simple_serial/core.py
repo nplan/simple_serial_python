@@ -5,7 +5,8 @@ Each packet has:
     id: 0-255 identifier byte
     payload: any data bytes
 Packets are received and sent using two threads handling the serial port.
-Callback targeting specific packet ids are supported.
+Callback targeting specific packet ids are supported. Packets that have a callback assigned are not placed in the
+read queue!
 """
 
 from queue import Queue, Full, Empty
@@ -296,8 +297,9 @@ class SimpleSerial:
                 if b == self.END:
                     # End of frame, verify
                     try:
+                        cb = self.process_callback(self.current_id, self.current_payload)
                         self.received_queue.put((self.current_id, self.current_payload), block=False)
-                        self.process_callback(self.current_id, self.current_payload)
+
                     except (FrameError, Full) as e:
                         pass
                     self.byte_count = 0
@@ -367,11 +369,14 @@ class SimpleSerial:
         :param payload: packet payload
         """
         try:
-            self.callback_queue.put((self.callbacks[id], payload), block=False)
-        except Full:
-            pass
+            cb = self.callbacks[id]
         except KeyError:
-            pass
+            return False
+        else:
+            try:
+                self.callback_queue.put((cb, payload), block=False)
+            except Full:
+                pass
 
     def callback_worker(self):
         """
@@ -391,13 +396,11 @@ class SimpleSerial:
 
 
 if __name__ == '__main__':
-    ss = SimpleSerial("/dev/cu.SLAB_USBtoUART29", 115200)
-    ss.set_callback(30, print)
+    ss = SimpleSerial("/dev/cu.SLAB_USBtoUART", 57600)
+    ss.set_callback(1, lambda pld: print(bytes2int(pld)))
     ss.open()
-    ss.send(4, "abcd")
     try:
         while True:
-            r = ss.read()
-            print(r, bytes2str(r[1]))
+            sleep(0.01)
     except:
         ss.close()
