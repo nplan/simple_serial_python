@@ -29,7 +29,7 @@ Custom data types can be easily added.
 * Install using pip:
 
 ```shell
-pip install {your_download_location}/simple_serial/
+pip install git+https://github.com/nplan/simple_serial_python.git
 ```
 > Don't forget to use `pip3` if you have multiple python versions installed.
 
@@ -83,9 +83,9 @@ as one of the flag bytes. *default = ASCII 1 SOH*
 
 A complete packet frame:
 
-|BYTE 0| BYTE 1 | BYTE 2 | BYTES 3 ... *N*-1 | BYTE *N*|
-------|--------|--------|--------------------|---------|
-|START|LEN|ID|Payload Data Bytes|END|
+|BYTE 0| BYTE 1 | BYTE 2 | BYTES 3 ... *N*-2 | BYTE *N*-1| BYTE *N*|
+------|--------|--------|--------------------|-----------|---------|
+|START|LEN|ID|Payload Data Bytes|CRC|END|
 
 Byte 1 *LEN* indicates the total length of packet in bytes.
 
