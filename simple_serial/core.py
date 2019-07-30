@@ -130,9 +130,9 @@ class SimpleSerial:
         self.payload_max_len = payload_max_len
         self.packet_timeout = packet_timeout
 
-        self.receive_thread: Thread = None
-        self.send_thread: Thread = None
-        self.callback_thread: Thread = None
+        self.receive_thread = None
+        self.send_thread = None
+        self.callback_thread = None
 
         self.callbacks = {}
         self.callback_queue = Queue(maxsize=queue_max_len)
