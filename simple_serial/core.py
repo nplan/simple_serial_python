@@ -1,6 +1,6 @@
 """
 Simple package for receiving and sending data over serial. Data is framed in packets:
-|START|LEN|ID|... PAYLOAD BYTES ...|END|
+|START|LEN|ID|... PAYLOAD BYTES ...|CRC|END|
 Each packet has:
     id: 0-255 identifier byte
     payload: any data bytes
@@ -15,6 +15,7 @@ from threading import Thread
 import struct
 from time import sleep, time
 from warnings import warn
+import crcmod
 
 
 def bytes2str(b):
@@ -72,13 +73,22 @@ def float2bytes(f):
     return b
 
 
-class FrameError(Exception):
-    """ Raised when received frame is invalid """
+class SimpleSerialException(Exception):
     pass
 
 
-class ReplyTimeout(Exception):
-    """ Raised when reply is not received in time."""
+class FrameError(SimpleSerialException):
+    """ Raised when received frame is invalid. """
+    pass
+
+
+class ReplyTimeout(SimpleSerialException):
+    """ Raised when reply is not received in time. """
+    pass
+
+
+class CRCError(SimpleSerialException):
+    """ Raised when CRC does not match. """
     pass
 
 
@@ -112,6 +122,7 @@ class SimpleSerial:
 
         self.serial = Serial(baudrate=baud, timeout=1, *args, *kwargs)
         self.serial.port = port
+        self.serial_alive = False
 
         self.START = start
         self.END = end
@@ -136,6 +147,8 @@ class SimpleSerial:
         """
         self.is_open = True
         self.serial.open()
+        self.serial_alive = True
+
         self.receive_thread = Thread(target=self.receive_worker, daemon=True)
         self.send_thread = Thread(target=self.send_worker, daemon=True)
         self.callback_thread = Thread(target=self.callback_worker, daemon=True)
@@ -156,6 +169,7 @@ class SimpleSerial:
         self.send_thread.join()
         self.callback_thread.join()
         self.serial.close()
+        self.serial_alive = False
 
     def send(self, id, payload, wait_reply=False, reply_has_payload=False, timeout=1.0, retry=0):
         """
@@ -181,7 +195,8 @@ class SimpleSerial:
             raise TypeError("Argument is not bytes/int/float/string.")
         # Check length
         if len(payload) > self.payload_max_len:
-            raise ValueError("Payload (len={}) must not be longer than payload_max_len={}.".format(len(payload), self.payload_max_len))
+            raise ValueError("Payload (len={}) must not be longer than payload_max_len={}."
+                             .format(len(payload), self.payload_max_len))
         frame = self.frame(id, payload)
 
         if wait_reply:
@@ -276,11 +291,15 @@ class SimpleSerial:
         """
         Frame payload data. Insert START, END and ESC bytes, length and id.
         :param id: packet id
-        :param payload: data to frame
+        :param payload: data to frame, type bytes or bytearray
         :return: framed data
         """
         if not 0 <= id < 256:
             raise ValueError("id must be in range(0, 255)")
+        payload = bytearray(payload)
+        # Extend payload with calculated CRC
+        payload.extend(self.calc_crc(payload))
+
         packet = bytearray()
         packet.append(self.START)  # start byte
         packet.append(0)  # length byte placeholder
@@ -307,7 +326,25 @@ class SimpleSerial:
             raise FrameError("Length mismatch.")
         id = packet[2]
         payload = self.unescape(packet[3:-1])
+
+        # Extract and verify CRC
+        crc = payload.pop(-1)
+        crc_calc = self.calc_crc(payload)
+        if crc != crc_calc:
+            raise CRCError()
+
         return {"len": length, "id": id, "payload": payload}
+
+    @staticmethod
+    def calc_crc(bts):
+        """
+        Calculate CRC-8 value of input bytes.
+        :param bts: sequence of bytes, type bytes or bytearray
+        :return: single byte CRC-8, type bytes
+        """
+        crc8 = crcmod.predefined.Crc("crc-8")
+        crc8.update(bts)
+        return crc8.digest()
 
     def read_packet(self, b):
         """
@@ -316,9 +353,10 @@ class SimpleSerial:
         """
         if len(b) < 1:
             return
-        if time() - self.packet_start_time > self.packet_timeout:
-            self.byte_count = 0
-            self.esc_active = False
+        # if time() - self.packet_start_time > self.packet_timeout:
+        #     self.byte_count = 0
+        #     self.esc_active = False
+        #     return
         b = b[0]
         # Wait for START
         if self.byte_count == 0:
@@ -343,12 +381,15 @@ class SimpleSerial:
                     self.esc_active = True
                     return
                 if b == self.END:
+                    self.byte_count += 1
                     # End of frame, verify
-                    try:
-                        cb = self.process_callback(self.current_id, self.current_payload)
-                        self.received_queue.put((self.current_id, self.current_payload), block=False)
-
-                    except (FrameError, Full) as e:
+                    crc_received = bytes([self.current_payload[-1]])
+                    payload = self.current_payload[0:-1]
+                    crc_calculated = self.calc_crc(payload)
+                    if self.current_len == self.byte_count and crc_received == crc_calculated:
+                        self.process_callback(self.current_id, payload)
+                        self.received_queue.put((self.current_id, payload), block=False)
+                    else:
                         pass
                     self.byte_count = 0
                     return
@@ -369,36 +410,49 @@ class SimpleSerial:
         Receive worker function. Reads serial port byte by byte.
         """
         while self.is_open:
-            try:
-                b = self.serial.read()
-                # print(b.decode("ascii"), end="")
-            except SerialException:
-                self.restart()
-            else:
-                self.read_packet(b)
+            if self.serial_alive:
+                try:
+                    b = self.serial.read()
+                except SerialException:
+                    self.serial_alive = False
+                    self.restart()
+                else:
+                    self.read_packet(b)
 
     def send_worker(self):
         """
         Send worker function. Takes frame from send queue and sends it over serial.
         """
         while self.is_open:
-            try:
-                frame = self.send_queue.get(block=False)
-            except Empty:
-                pass
-            else:
-                self.serial.write(frame)
-            sleep(1/1000)
+            if self.serial_alive:
+                try:
+                    frame = self.send_queue.get(block=False)
+                except Empty:
+                    pass
+                else:
+                    try:
+                        self.serial.write(frame)
+                    except SerialException:
+                        self.serial_alive = False
+                        self.restart()
+            sleep(1/1e3)
 
     def restart(self):
         """
         Close and reopen the serial port.
         """
-        try:
-            self.serial.close()
-            self.serial.open()
-        except SerialException:
-            pass
+        print("Serial port closed unexpectedly. Trying to reopen...")
+        while True:
+            try:
+                self.serial.close()
+                self.serial.open()
+            except SerialException:
+                pass
+            else:
+                self.serial_alive = True
+                print("Reopened serial port.")
+                break
+            sleep(1)
 
     def set_callback(self, id, callback):
         """
@@ -426,7 +480,7 @@ class SimpleSerial:
         try:
             cb = self.callbacks[id]
         except KeyError:
-            return False
+            return
         else:
             try:
                 self.callback_queue.put((cb, payload), block=False)
@@ -452,13 +506,11 @@ class SimpleSerial:
 
 if __name__ == '__main__':
     ss = SimpleSerial("/dev/cu.usbserial-FTA02V6E", 115200)
-    # ss.set_callback(1, lambda pld: print(bytes2float(pld)))
+    ss.set_callback(1, lambda pld: print(pld))
     ss.open()
     try:
         while True:
-            ss.send(101, 1, wait_reply=True, timeout=1.0, retry=10)
-            sleep(2)
-            ss.send(102, 1, wait_reply=True, timeout=1.0)
-            sleep(2)
+            ss.send(1, 12.345)
+            sleep(1)
     finally:
         ss.close()
