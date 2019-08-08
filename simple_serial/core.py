@@ -11,7 +11,7 @@ read queue!
 
 from queue import Queue, Full, Empty
 from serial import Serial, SerialException
-from threading import Thread
+from threading import Thread, Lock
 import struct
 from time import sleep, time
 from warnings import warn
@@ -120,7 +120,7 @@ class SimpleSerial:
         self.current_payload = None
         self.esc_active = False
 
-        self.serial = Serial(baudrate=baud, timeout=1, *args, *kwargs)
+        self.serial = Serial(baudrate=baud, timeout=0, *args, *kwargs)
         self.serial.port = port
         self.serial_alive = False
 
@@ -133,9 +133,15 @@ class SimpleSerial:
         self.receive_thread = None
         self.send_thread = None
         self.callback_thread = None
+        self.lock = Lock()
 
         self.callbacks = {}
+        """ A dict of set callbacks {id: callback function}"""
+
         self.callback_queue = Queue(maxsize=queue_max_len)
+
+        self.awaiting_reply = {}
+        """ A dict of sent packets, waiting for reply {id: (sent_time, frame, nr_send_tries_left, replied payload)}"""
 
         self.packet_start_time = 0
 
@@ -171,16 +177,15 @@ class SimpleSerial:
         self.serial.close()
         self.serial_alive = False
 
-    def send(self, id, payload, wait_reply=False, reply_has_payload=False, timeout=1.0, retry=0):
+    def send(self, id, payload, wait_reply=False, reply_timeout=1.0, resend=0):
         """
         Convert payload to bytes from int/float/string and puts it to send queue.
         Ignores packet if send queue is full.
         :param id: packet id
         :param payload: bytes, int, float, str
         :param wait_reply: True to wait for reply
-        :param reply_has_payload: True if reply has payload. If true, returns replied payload.
-        :param timeout: time to wait for reply
-        :param retry: number of retries if reply is not received. Total number of tries is 1 + retry
+        :param reply_timeout: time to wait for reply
+        :param resend: number of retries if reply is not received. Total number of tries is 1 + retry
         """
         # Check type
         if isinstance(payload, bytes):
@@ -199,48 +204,25 @@ class SimpleSerial:
                              .format(len(payload), self.payload_max_len))
         frame = self.frame(id, payload)
 
-        if wait_reply:
-
-            reply = {"occured": False,
-                     "payload": None}
-
-            def callback(payload):
-                reply["occured"] = True
-                reply["payload"] = payload
-
-            prev_callback = self.callbacks.get("id", None)
-            self.set_callback(id, callback)
-
         try:
-            self.send_queue.put(frame, block=False)
+            self.send_queue.put((id, frame), block=False)
         except Full:
             pass
 
-        if wait_reply:
-            for r in range(1, retry+2):
-                start_time = time()
-                break_for = False
-                while True:
-                    if reply["occured"]:
-                        if reply_has_payload:
-                            ret = reply["payload"]
-                        else:
-                            ret = None
-                        break_for = True
-                        break
-                    if time() > start_time + timeout:
-                        break
-                    sleep(0.001)
-                if break_for:
-                    break
-            else:
-                raise ReplyTimeout("Reply not received after {}x {}s tries for packet id '{}'.".format(r, timeout, id))
-
-            if not prev_callback:
-                self.clear_callback(id)
-            else:
-                self.set_callback(id, prev_callback)
-            return ret
+        # Schedule resending and wait reply
+        if wait_reply or resend > 0:
+            self.awaiting_reply[id] = (time(), reply_timeout, frame, resend, None)
+            if wait_reply:
+                # wait for reply and return replied payload
+                while True :
+                    try:
+                        reply = self.awaiting_reply[id][4]
+                    except KeyError:
+                        return None
+                    else:
+                        if reply:
+                            return reply
+                    sleep(1e-3)
 
     def read(self, block=True, timeout=None):
         """
@@ -387,8 +369,13 @@ class SimpleSerial:
                     payload = self.current_payload[0:-1]
                     crc_calculated = self.calc_crc(payload)
                     if self.current_len == self.byte_count and crc_received == crc_calculated:
-                        self.process_callback(self.current_id, payload)
-                        self.received_queue.put((self.current_id, payload), block=False)
+                        callback_processed =  self.process_callback(self.current_id, payload)
+                        reply_processed = self.process_reply(self.current_id, payload)
+                        if not callback_processed and not reply_processed:
+                            try:
+                                self.received_queue.put((self.current_id, payload), block=False)
+                            except Full:
+                                pass
                     else:
                         pass
                     self.byte_count = 0
@@ -419,6 +406,9 @@ class SimpleSerial:
                 else:
                     self.read_packet(b)
 
+                self.update_awaiting_reply()
+            sleep(1e-3)
+
     def send_worker(self):
         """
         Send worker function. Takes frame from send queue and sends it over serial.
@@ -426,7 +416,7 @@ class SimpleSerial:
         while self.is_open:
             if self.serial_alive:
                 try:
-                    frame = self.send_queue.get(block=False)
+                    id, frame = self.send_queue.get(block=False)
                 except Empty:
                     pass
                 else:
@@ -480,12 +470,13 @@ class SimpleSerial:
         try:
             cb = self.callbacks[id]
         except KeyError:
-            return
+            return False
         else:
             try:
                 self.callback_queue.put((cb, payload), block=False)
             except Full:
                 pass
+            return True
 
     def callback_worker(self):
         """
@@ -500,8 +491,33 @@ class SimpleSerial:
                 try:
                     callback(payload)
                 except Exception as e:
-                    warn("Exception occurred during callback for msg id '{}': {}".format(id, e))
-            sleep(1/1000)
+                    print("Exception occurred during callback for msg id '{}': {}".format(id, e))
+            sleep(1/1e3)
+
+    def update_awaiting_reply(self):
+        items_to_pop = []
+        for id, (time_sent, timeout, frame, tries_left, replied) in self.awaiting_reply.items():
+            if not replied:
+                if time() - time_sent > timeout:
+                    if tries_left <= 0:
+                        items_to_pop.append(id)
+                        print("Reply for packet id {} not received.".format(id))
+                    else:
+                        try:
+                            self.send_queue.put((id, frame), block=False)
+                        except Full:
+                            pass
+                        else:
+                            self.awaiting_reply[id] = (time(), timeout, frame, tries_left - 1, replied)
+        for i in items_to_pop:
+            self.awaiting_reply.pop(i)
+
+    def process_reply(self, id, payload):
+        try:
+            self.awaiting_reply[id][4] = payload
+            return True
+        except KeyError:
+            return False
 
 
 if __name__ == '__main__':
@@ -510,7 +526,7 @@ if __name__ == '__main__':
     ss.open()
     try:
         while True:
-            ss.send(1, 12.345)
-            sleep(1)
+            ss.send(1, 12.345, wait_reply=True, reply_timeout=1)
+            sleep(5)
     finally:
         ss.close()
