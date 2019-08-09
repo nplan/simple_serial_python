@@ -20,10 +20,6 @@ Custom data types can be easily added.
 
 ## Installation
 
-### Clone
-
-* Clone this repo to your machine
-
 ### Setup
 
 * Install using pip:
