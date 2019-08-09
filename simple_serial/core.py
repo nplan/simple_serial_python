@@ -210,19 +210,18 @@ class SimpleSerial:
             pass
 
         # Schedule resending and wait reply
-        if wait_reply or resend > 0:
-            self.awaiting_reply[id] = (time(), reply_timeout, frame, resend, None)
-            if wait_reply:
-                # wait for reply and return replied payload
-                while True :
-                    try:
-                        reply = self.awaiting_reply[id][4]
-                    except KeyError:
-                        return None
-                    else:
-                        if reply:
-                            return reply
-                    sleep(1e-3)
+        self.awaiting_reply[id] = [time(), reply_timeout, frame, resend, None]
+        if wait_reply:
+            # wait for reply and return replied payload
+            while True :
+                try:
+                    reply = self.awaiting_reply[id][4]
+                except KeyError:
+                    return None
+                else:
+                    if reply:
+                        return reply
+                sleep(1e-3)
 
     def read(self, block=True, timeout=None):
         """
@@ -508,7 +507,7 @@ class SimpleSerial:
                         except Full:
                             pass
                         else:
-                            self.awaiting_reply[id] = (time(), timeout, frame, tries_left - 1, replied)
+                            self.awaiting_reply[id] = [time(), timeout, frame, tries_left - 1, replied]
         for i in items_to_pop:
             self.awaiting_reply.pop(i)
 
@@ -518,15 +517,3 @@ class SimpleSerial:
             return True
         except KeyError:
             return False
-
-
-if __name__ == '__main__':
-    ss = SimpleSerial("/dev/cu.usbserial-FTA02V6E", 115200)
-    ss.set_callback(1, lambda pld: print(pld))
-    ss.open()
-    try:
-        while True:
-            ss.send(1, 12.345, wait_reply=True, reply_timeout=1)
-            sleep(5)
-    finally:
-        ss.close()
