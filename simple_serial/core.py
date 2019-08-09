@@ -14,7 +14,6 @@ from serial import Serial, SerialException
 from threading import Thread, Lock
 import struct
 from time import sleep, time
-from warnings import warn
 import crcmod
 
 
@@ -360,6 +359,7 @@ class SimpleSerial:
             if not self.esc_active:
                 if b == self.ESC:
                     self.esc_active = True
+                    self.byte_count += 1
                     return
                 if b == self.END:
                     self.byte_count += 1
