@@ -36,7 +36,7 @@ def bytes2int(b):
         raise TypeError("b must be bytes or bytearray instance.")
     if isinstance(b, bytearray):
         b = bytes(b)
-    return int.from_bytes(b, byteorder="little")
+    return int.from_bytes(b, byteorder="little", signed=True)
 
 
 def int2bytes(i):
