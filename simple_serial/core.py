@@ -15,6 +15,7 @@ from threading import Thread, Lock
 import struct
 from time import sleep, time
 import crcmod
+import logging
 
 
 def bytes2str(b):
@@ -146,6 +147,8 @@ class SimpleSerial:
 
         self.is_open = False
 
+        self.logger = logging.getLogger("SimpleSerial({})".format(port))
+
     def open(self):
         """
         Open serial communication, start receive/send/callback threads.
@@ -160,6 +163,7 @@ class SimpleSerial:
         self.receive_thread.start()
         self.send_thread.start()
         self.callback_thread.start()
+        self.logger.debug("Open")
 
     def close(self, wait_send=True):
         """
@@ -175,6 +179,7 @@ class SimpleSerial:
         self.callback_thread.join()
         self.serial.close()
         self.serial_alive = False
+        self.logger.debug("Closed")
 
     def send(self, id, payload, wait_reply=False, reply_timeout=1.0, resend=0):
         """
@@ -186,6 +191,10 @@ class SimpleSerial:
         :param reply_timeout: time to wait for reply
         :param resend: number of retries if reply is not received. Total number of tries is 1 + retry
         """
+        # Check id
+        if not isinstance(id, int) or not 0 <= id <= 255:
+            raise ValueError("id must be int in range [0, 255]. Currently: {}".format(id))
+
         # Check type
         if isinstance(payload, bytes):
             pass
@@ -196,11 +205,13 @@ class SimpleSerial:
         elif isinstance(payload, str):
             payload = str2bytes(payload)
         else:
-            raise TypeError("Argument is not bytes/int/float/string.")
+            raise TypeError("Payload is type '{}'. Must be bytes/int/float/string.".format(type(payload)))
+
         # Check length
         if len(payload) > self.payload_max_len:
             raise ValueError("Payload (len={}) must not be longer than payload_max_len={}."
                              .format(len(payload), self.payload_max_len))
+
         frame = self.frame(id, payload)
 
         try:
@@ -274,8 +285,6 @@ class SimpleSerial:
         :param payload: data to frame, type bytes or bytearray
         :return: framed data
         """
-        if not 0 <= id < 256:
-            raise ValueError("id must be in range(0, 255)")
         payload = bytearray(payload)
         # Extend payload with calculated CRC
         payload.extend(self.calc_crc(payload))
@@ -296,7 +305,6 @@ class SimpleSerial:
         :param packet: framed data
         :return: dict with keys: length, id, payload
         """
-        print(packet)
         if packet[0] != self.START:
             raise FrameError("START byte missing.")
         if packet[-1] != self.END:
@@ -368,7 +376,7 @@ class SimpleSerial:
                     payload = self.current_payload[0:-1]
                     crc_calculated = self.calc_crc(payload)
                     if self.current_len == self.byte_count and crc_received == crc_calculated:
-                        callback_processed =  self.process_callback(self.current_id, payload)
+                        callback_processed = self.process_callback(self.current_id, payload)
                         reply_processed = self.process_reply(self.current_id, payload)
                         if not callback_processed and not reply_processed:
                             try:
@@ -430,7 +438,7 @@ class SimpleSerial:
         """
         Close and reopen the serial port.
         """
-        print("Serial port closed unexpectedly. Trying to reopen...")
+        self.logger.warning("Serial port closed unexpectedly. Trying to reopen...")
         while True:
             try:
                 self.serial.close()
@@ -439,7 +447,7 @@ class SimpleSerial:
                 pass
             else:
                 self.serial_alive = True
-                print("Reopened serial port.")
+                self.logger.warning("Reopened serial port.")
                 break
             sleep(1)
 
@@ -490,7 +498,7 @@ class SimpleSerial:
                 try:
                     callback(payload)
                 except Exception as e:
-                    print("Exception occurred during callback for msg id '{}': {}".format(id, e))
+                    self.logger.error("Exception occurred during callback for msg id '{}': {}".format(id, e))
             sleep(1/1e3)
 
     def update_awaiting_reply(self):
@@ -500,7 +508,7 @@ class SimpleSerial:
                 if time() - time_sent > timeout:
                     if tries_left <= 0:
                         items_to_pop.append(id)
-                        print("Reply for packet id {} not received.".format(id))
+                        self.logger.warning("Reply for packet id {} not received.".format(id))
                     else:
                         try:
                             self.send_queue.put((id, frame), block=False)
