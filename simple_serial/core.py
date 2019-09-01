@@ -120,7 +120,7 @@ class SimpleSerial:
         self.current_payload = None
         self.esc_active = False
 
-        self.serial = Serial(baudrate=baud, timeout=0, *args, *kwargs)
+        self.serial = Serial(baudrate=baud, timeout=1e-1, *args, *kwargs)
         self.serial.port = port
         self.serial_alive = False
 
@@ -406,7 +406,7 @@ class SimpleSerial:
         while self.is_open:
             if self.serial_alive:
                 try:
-                    b = self.serial.read()
+                    b = self.serial.read()  # blocks until a byte is available or timeout set in serial constructor
                 except SerialException:
                     self.serial_alive = False
                     self.restart()
@@ -414,7 +414,6 @@ class SimpleSerial:
                     self.read_packet(b)
 
                 self.update_awaiting_reply()
-            sleep(1e-3)
 
     def send_worker(self):
         """
@@ -423,7 +422,7 @@ class SimpleSerial:
         while self.is_open:
             if self.serial_alive:
                 try:
-                    id, frame = self.send_queue.get(block=False)
+                    id, frame = self.send_queue.get(block=True, timeout=1e-1)
                 except Empty:
                     pass
                 else:
@@ -432,7 +431,6 @@ class SimpleSerial:
                     except SerialException:
                         self.serial_alive = False
                         self.restart()
-            sleep(1/1e3)
 
     def restart(self):
         """
@@ -491,7 +489,7 @@ class SimpleSerial:
         """
         while self.is_open:
             try:
-                callback, payload = self.callback_queue.get(block=False)
+                callback, payload = self.callback_queue.get(block=True, timeout=1e-1)
             except Empty:
                 pass
             else:
@@ -499,7 +497,6 @@ class SimpleSerial:
                     callback(payload)
                 except Exception as e:
                     self.logger.error("Exception occurred during callback for msg id '{}': {}".format(id, e))
-            sleep(1/1e3)
 
     def update_awaiting_reply(self):
         items_to_pop = []
