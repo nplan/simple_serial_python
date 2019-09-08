@@ -437,7 +437,7 @@ class SimpleSerial:
         Close and reopen the serial port.
         """
         self.logger.warning("Serial port closed unexpectedly. Trying to reopen...")
-        while True:
+        while self.is_open:
             try:
                 self.serial.close()
                 self.serial.open()
