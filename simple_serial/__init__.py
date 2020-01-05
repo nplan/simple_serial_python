@@ -1,1 +1,1 @@
-from simple_serial.core import *
+from .core import *
