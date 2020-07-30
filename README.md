@@ -8,7 +8,7 @@ Currently supported platforms:
 * Arduino / C++
 * Python
 
-This is a repository for the python version. Find Arduino / C++ version at: 
+This is a repository for the Python version. Find Arduino / C++ version at: 
 https://github.com/nplan/simple_serial_arduino
 
 The library supports simple and efficient transfer of data types:
@@ -95,3 +95,15 @@ into **read queue**. Packets are retrieved from this queue using function ```Sim
 
 The length of send and read queues is set by argument ```queue_max_len``` of ```SimpleSerial()``` constructor.
 If a queue is full, packets are discarded (not sent or not received).
+
+## Testing
+A number of test are implemented that verify the core functionality of the library by using a loopback
+serial interface. You can use `pytest` to run the tests.
+
+For testing communication with external devices running Arduino / C++ implementation of this library `transmission_tester.py` 
+script is implemented. You can use it by running:
+
+`python3 -m simple serial.transmission_tester <port> <baud>`
+
+
+ 

@@ -97,11 +97,12 @@ class SimpleSerial:
     Create simple_serial_python object.
     """
 
-    def __init__(self, port, baud, *args, start=0x02, end=0x03, esc=0x01, payload_max_len=8,
+    def __init__(self, port=None, baud=None, serial=None, start=0x02, end=0x03, esc=0x01, payload_max_len=8,
                  packet_timeout=1.0, queue_max_len=100, **kwargs):
         """
         :param port: serial port
         :param baud: baud rate
+        :param serial: serial instance, must not be opened
         :param start: start byte flag value
         :param end: end byte flag value
         :param esc: esc byte flag value
@@ -111,6 +112,17 @@ class SimpleSerial:
         :param args: args passed to Serial
         :param kwargs: kwargs passed to Serial
         """
+        # set up serial port
+        if not serial and port and baud:
+            self.serial = Serial(baudrate=baud, timeout=1e-1, *kwargs)
+            self.serial.port = port
+        elif serial and not port and not baud:
+            self.serial = serial
+        else:
+            raise ValueError("Please set 'port' and 'baud', or set 'serial'.")
+
+        self.serial_alive = False
+
         self.received_queue = Queue(maxsize=queue_max_len)
         self.send_queue = Queue(maxsize=queue_max_len)
 
@@ -119,10 +131,6 @@ class SimpleSerial:
         self.current_len = None
         self.current_payload = None
         self.esc_active = False
-
-        self.serial = Serial(baudrate=baud, timeout=1e-1, *args, *kwargs)
-        self.serial.port = port
-        self.serial_alive = False
 
         self.START = start
         self.END = end
@@ -143,11 +151,18 @@ class SimpleSerial:
         self.awaiting_reply = {}
         """ A dict of sent packets, waiting for reply {id: (sent_time, frame, nr_send_tries_left, replied payload)}"""
 
-        self.packet_start_time = 0
+        self.packet_start_time = 0.
 
         self.is_open = False
 
-        self.logger = logging.getLogger("SimpleSerial({})".format(port))
+        self.logger = logging.getLogger("SimpleSerial({})".format(self.serial.port))
+
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close(wait_send=False)
 
     def open(self):
         """
@@ -181,15 +196,18 @@ class SimpleSerial:
         self.serial_alive = False
         self.logger.debug("Closed")
 
-    def send(self, id, payload, wait_reply=False, reply_timeout=1.0, resend=0):
+    def send(self, id, payload, expect_reply=False, block_until_reply=False, reply_timeout=1.0, resend=0):
         """
         Convert payload to bytes from int/float/string and puts it to send queue.
         Ignores packet if send queue is full.
         :param id: packet id
         :param payload: bytes, int, float, str
-        :param wait_reply: True to wait for reply
-        :param reply_timeout: time to wait for reply
-        :param resend: number of retries if reply is not received. Total number of tries is 1 + retry
+        :param expect_reply: Set True for packets that trigger a reply. When this is True, received packets with same
+            id are not placed in receive queue. To read reply use block_until_reply or register a callback.
+        :param block_until_reply: True to block until reply received and return received (id, payload)
+        :param reply_timeout: time to wait for reply, it expect_reply is True
+        :param resend: if expect_reply is True, number of send retries if reply is not received.
+            Total number of tries is 1 + retry
         """
         # Check id
         if not isinstance(id, int) or not 0 <= id <= 255:
@@ -217,21 +235,23 @@ class SimpleSerial:
         try:
             self.send_queue.put((id, frame), block=False)
         except Full:
-            pass
+            self.logger.debug("Send queue full, packet id {} discarded".format(id))
 
         # Schedule resending and wait reply
-        self.awaiting_reply[id] = [time(), reply_timeout, frame, resend, None]
-        if wait_reply:
-            # wait for reply and return replied payload
-            while True :
-                try:
-                    reply = self.awaiting_reply[id][4]
-                except KeyError:
-                    return None
-                else:
-                    if reply:
-                        return reply
-                sleep(1e-3)
+        if expect_reply:
+            self.awaiting_reply[id] = [time(), reply_timeout, frame, resend, None]
+
+            if block_until_reply:
+                # wait for reply and return replied payload
+                while True :
+                    try:
+                        reply = self.awaiting_reply[id][4]
+                    except KeyError:
+                        raise ReplyTimeout
+                    else:
+                        if reply:
+                            return reply
+                    sleep(1e-3)
 
     def read(self, block=True, timeout=None):
         """
@@ -317,9 +337,9 @@ class SimpleSerial:
 
         # Extract and verify CRC
         crc = payload.pop(-1)
-        crc_calc = self.calc_crc(payload)
+        crc_calc = self.calc_crc(payload)[0]
         if crc != crc_calc:
-            raise CRCError()
+            raise CRCError("CRC mismatch")
 
         return {"len": length, "id": id, "payload": payload}
 
@@ -341,10 +361,10 @@ class SimpleSerial:
         """
         if len(b) < 1:
             return
-        # if time() - self.packet_start_time > self.packet_timeout:
-        #     self.byte_count = 0
-        #     self.esc_active = False
-        #     return
+        if self.byte_count > 0 and time() - self.packet_start_time > self.packet_timeout:
+            self.byte_count = 0
+            self.esc_active = False
+            return
         b = b[0]
         # Wait for START
         if self.byte_count == 0:
@@ -452,7 +472,7 @@ class SimpleSerial:
     def set_callback(self, id, callback):
         """
         Set a function to be called when a packet with certain id is received.
-        Arguments passed to callback function: id, payload
+        Arguments passed to callback function: payload
         :param id: packet id
         :param callback: function to call
         """
@@ -471,6 +491,7 @@ class SimpleSerial:
         Check if callback for packet id is set. If true, put the callback function in callback queue.
         :param id: packed id
         :param payload: packet payload
+        :return True if callback is registered, False otherwise
         """
         try:
             cb = self.callbacks[id]
@@ -496,9 +517,12 @@ class SimpleSerial:
                 try:
                     callback(payload)
                 except Exception as e:
-                    self.logger.error("Exception occurred during callback for msg id '{}': {}".format(id, e))
+                    self.logger.error("Exception occurred during callback '{}': {}".format(callback.__name__, e))
 
     def update_awaiting_reply(self):
+        """
+        Update the list of sent packets waiting for reply
+        """
         items_to_pop = []
         for id, (time_sent, timeout, frame, tries_left, replied) in self.awaiting_reply.items():
             if not replied:
@@ -519,6 +543,7 @@ class SimpleSerial:
     def process_reply(self, id, payload):
         try:
             self.awaiting_reply[id][4] = payload
-            return True
         except KeyError:
             return False
+        else:
+            return True
