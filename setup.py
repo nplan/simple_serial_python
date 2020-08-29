@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="simple_serial_python",
-    version="0.1.0",
+    version="2.0.0",
     author="Nejc Planinsek",
     author_email="planinseknejc@gmail.com",
     description="A serial communication package",
